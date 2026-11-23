@@ -1,0 +1,293 @@
+{
+ "exhaustive": [
+  {
+   "scenario": "create",
+   "plane": "naive",
+   "schedules": 35,
+   "failing": 33,
+   "kinds": {
+    "leak": 33,
+    "two-vms": 15
+   },
+   "seconds": 0.02
+  },
+  {
+   "scenario": "create",
+   "plane": "journal",
+   "schedules": 353,
+   "failing": 0,
+   "kinds": {},
+   "seconds": 0.29
+  },
+  {
+   "scenario": "create",
+   "plane": "reconcile",
+   "schedules": 54,
+   "failing": 0,
+   "kinds": {},
+   "seconds": 0.06
+  },
+  {
+   "scenario": "create-delete",
+   "plane": "naive",
+   "schedules": 100,
+   "failing": 57,
+   "kinds": {
+    "orphan": 57,
+    "two-vms": 23
+   },
+   "seconds": 0.07
+  },
+  {
+   "scenario": "create-delete",
+   "plane": "journal",
+   "schedules": 1607,
+   "failing": 318,
+   "kinds": {
+    "orphan": 318
+   },
+   "seconds": 1.09
+  },
+  {
+   "scenario": "create-delete",
+   "plane": "reconcile",
+   "schedules": 1548,
+   "failing": 0,
+   "kinds": {},
+   "seconds": 1.08
+  },
+  {
+   "scenario": "recreate",
+   "plane": "naive",
+   "schedules": 195,
+   "failing": 144,
+   "kinds": {
+    "leak": 144,
+    "two-vms": 60
+   },
+   "seconds": 0.1
+  },
+  {
+   "scenario": "recreate",
+   "plane": "journal",
+   "schedules": 4303,
+   "failing": 1808,
+   "kinds": {
+    "lost": 707,
+    "orphan": 707,
+    "leak": 1101,
+    "two-vms": 841
+   },
+   "seconds": 3.67
+  },
+  {
+   "scenario": "recreate",
+   "plane": "reconcile",
+   "schedules": 11135,
+   "failing": 0,
+   "kinds": {},
+   "seconds": 10.67
+  },
+  {
+   "scenario": "retry-race",
+   "plane": "naive",
+   "schedules": 3104,
+   "failing": 3090,
+   "kinds": {
+    "leak": 3090,
+    "two-vms": 2264
+   },
+   "seconds": 1.11
+  },
+  {
+   "scenario": "retry-race",
+   "plane": "journal",
+   "schedules": 7712,
+   "failing": 0,
+   "kinds": {},
+   "seconds": 3.72
+  },
+  {
+   "scenario": "retry-race",
+   "plane": "reconcile",
+   "schedules": 1678,
+   "failing": 0,
+   "kinds": {},
+   "seconds": 0.78
+  },
+  {
+   "scenario": "delete-race",
+   "plane": "naive",
+   "schedules": 470,
+   "failing": 414,
+   "kinds": {
+    "leak": 357,
+    "two-vms": 203,
+    "orphan": 57
+   },
+   "seconds": 0.23
+  },
+  {
+   "scenario": "delete-race",
+   "plane": "journal",
+   "schedules": 6953,
+   "failing": 1432,
+   "kinds": {
+    "orphan": 1432
+   },
+   "seconds": 4.55
+  },
+  {
+   "scenario": "delete-race",
+   "plane": "reconcile",
+   "schedules": 1671,
+   "failing": 0,
+   "kinds": {},
+   "seconds": 0.94
+  }
+ ],
+ "fuzz": [
+  {
+   "scenario": "two-machines",
+   "plane": "naive",
+   "runs": 20000,
+   "failing": 8537,
+   "kinds": {
+    "leak": 4778,
+    "orphan": 5052,
+    "two-vms": 3824
+   },
+   "seconds": 15.3
+  },
+  {
+   "scenario": "two-machines",
+   "plane": "journal",
+   "runs": 20000,
+   "failing": 5,
+   "kinds": {
+    "orphan": 5
+   },
+   "seconds": 17.8
+  },
+  {
+   "scenario": "two-machines",
+   "plane": "reconcile",
+   "runs": 20000,
+   "failing": 0,
+   "kinds": {},
+   "seconds": 15.2
+  },
+  {
+   "scenario": "three-clients",
+   "plane": "naive",
+   "runs": 20000,
+   "failing": 12278,
+   "kinds": {
+    "leak": 10024,
+    "two-vms": 6164,
+    "orphan": 3791
+   },
+   "seconds": 21.2
+  },
+  {
+   "scenario": "three-clients",
+   "plane": "journal",
+   "runs": 20000,
+   "failing": 1590,
+   "kinds": {
+    "orphan": 1081,
+    "two-vms": 660,
+    "leak": 527
+   },
+   "seconds": 19.0
+  },
+  {
+   "scenario": "three-clients",
+   "plane": "reconcile",
+   "runs": 20000,
+   "failing": 0,
+   "kinds": {},
+   "seconds": 14.4
+  },
+  {
+   "scenario": "create-delete",
+   "plane": "naive",
+   "runs": 20000,
+   "failing": 5749,
+   "kinds": {
+    "orphan": 5749,
+    "two-vms": 2414
+   },
+   "seconds": 5.0
+  },
+  {
+   "scenario": "create-delete",
+   "plane": "journal",
+   "runs": 20000,
+   "failing": 17,
+   "kinds": {
+    "orphan": 17
+   },
+   "seconds": 5.6
+  },
+  {
+   "scenario": "create-delete",
+   "plane": "reconcile",
+   "runs": 20000,
+   "failing": 0,
+   "kinds": {},
+   "seconds": 3.2
+  }
+ ],
+ "mutants": [
+  {
+   "mutant": "BlindRemove",
+   "caught_by": "recreate",
+   "schedules_to_first": 70
+  },
+  {
+   "mutant": "KeepsOldIncarnation",
+   "caught_by": "recreate",
+   "schedules_to_first": 617
+  },
+  {
+   "mutant": "TwoWorkers",
+   "caught_by": "create-delete",
+   "schedules_to_first": 908
+  }
+ ],
+ "shrink": [
+  {
+   "scenario": "two-machines",
+   "plane": "naive",
+   "before": 2,
+   "after": 1,
+   "steps": 19
+  },
+  {
+   "scenario": "two-machines",
+   "plane": "journal",
+   "before": 4,
+   "after": 4,
+   "steps": 24
+  },
+  {
+   "scenario": "three-clients",
+   "plane": "naive",
+   "before": 3,
+   "after": 1,
+   "steps": 34
+  },
+  {
+   "scenario": "three-clients",
+   "plane": "journal",
+   "before": 1,
+   "after": 1,
+   "steps": 41
+  }
+ ],
+ "exhaustive_total": {
+  "schedules": 40918,
+  "seconds": 28.4
+ }
+}
