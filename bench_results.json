@@ -1,5 +1,7 @@
 {
- "exhaustive": [
+ "note": "synthetic scenarios and a simulated cluster",
+ "python": "3.13.18",
+ "v1_exhaustive": [
   {
    "scenario": "create",
    "plane": "naive",
@@ -8,24 +10,21 @@
    "kinds": {
     "leak": 33,
     "two-vms": 15
-   },
-   "seconds": 0.02
+   }
   },
   {
    "scenario": "create",
    "plane": "journal",
    "schedules": 353,
    "failing": 0,
-   "kinds": {},
-   "seconds": 0.29
+   "kinds": {}
   },
   {
    "scenario": "create",
    "plane": "reconcile",
    "schedules": 54,
    "failing": 0,
-   "kinds": {},
-   "seconds": 0.06
+   "kinds": {}
   },
   {
    "scenario": "create-delete",
@@ -35,8 +34,7 @@
    "kinds": {
     "orphan": 57,
     "two-vms": 23
-   },
-   "seconds": 0.07
+   }
   },
   {
    "scenario": "create-delete",
@@ -45,16 +43,14 @@
    "failing": 318,
    "kinds": {
     "orphan": 318
-   },
-   "seconds": 1.09
+   }
   },
   {
    "scenario": "create-delete",
    "plane": "reconcile",
    "schedules": 1548,
    "failing": 0,
-   "kinds": {},
-   "seconds": 1.08
+   "kinds": {}
   },
   {
    "scenario": "recreate",
@@ -64,8 +60,7 @@
    "kinds": {
     "leak": 144,
     "two-vms": 60
-   },
-   "seconds": 0.1
+   }
   },
   {
    "scenario": "recreate",
@@ -77,16 +72,14 @@
     "orphan": 707,
     "leak": 1101,
     "two-vms": 841
-   },
-   "seconds": 3.67
+   }
   },
   {
    "scenario": "recreate",
    "plane": "reconcile",
    "schedules": 11135,
    "failing": 0,
-   "kinds": {},
-   "seconds": 10.67
+   "kinds": {}
   },
   {
    "scenario": "retry-race",
@@ -96,24 +89,21 @@
    "kinds": {
     "leak": 3090,
     "two-vms": 2264
-   },
-   "seconds": 1.11
+   }
   },
   {
    "scenario": "retry-race",
    "plane": "journal",
    "schedules": 7712,
    "failing": 0,
-   "kinds": {},
-   "seconds": 3.72
+   "kinds": {}
   },
   {
    "scenario": "retry-race",
    "plane": "reconcile",
    "schedules": 1678,
    "failing": 0,
-   "kinds": {},
-   "seconds": 0.78
+   "kinds": {}
   },
   {
    "scenario": "delete-race",
@@ -124,8 +114,7 @@
     "leak": 357,
     "two-vms": 203,
     "orphan": 57
-   },
-   "seconds": 0.23
+   }
   },
   {
    "scenario": "delete-race",
@@ -134,160 +123,399 @@
    "failing": 1432,
    "kinds": {
     "orphan": 1432
-   },
-   "seconds": 4.55
+   }
   },
   {
    "scenario": "delete-race",
    "plane": "reconcile",
    "schedules": 1671,
    "failing": 0,
-   "kinds": {},
-   "seconds": 0.94
+   "kinds": {}
   }
  ],
- "fuzz": [
+ "v1_totals": {
+  "naive": {
+   "schedules": 3904,
+   "failing": 3738
+  },
+  "journal": {
+   "schedules": 20928,
+   "failing": 3558
+  },
+  "reconcile": {
+   "schedules": 16086,
+   "failing": 0
+  }
+ },
+ "v1_reconcile_failover": [
   {
-   "scenario": "two-machines",
-   "plane": "naive",
-   "runs": 20000,
-   "failing": 8537,
-   "kinds": {
-    "leak": 4778,
-    "orphan": 5052,
-    "two-vms": 3824
-   },
-   "seconds": 15.3
+   "scenario": "create",
+   "schedules": 75,
+   "failing": 0,
+   "kinds": {}
   },
   {
-   "scenario": "two-machines",
-   "plane": "journal",
-   "runs": 20000,
+   "scenario": "create-delete",
+   "schedules": 5050,
+   "failing": 761,
+   "kinds": {
+    "orphan": 748,
+    "lost": 13
+   }
+  },
+  {
+   "scenario": "recreate",
+   "schedules": 34125,
+   "failing": 12120,
+   "kinds": {
+    "incomplete": 787,
+    "lost": 10498,
+    "leak": 1086,
+    "orphan": 802,
+    "two-vms": 690
+   }
+  },
+  {
+   "scenario": "retry-race",
+   "schedules": 6564,
+   "failing": 0,
+   "kinds": {}
+  },
+  {
+   "scenario": "delete-race",
+   "schedules": 6486,
+   "failing": 748,
+   "kinds": {
+    "orphan": 748
+   }
+  }
+ ],
+ "v1_reconcile_failover_total": {
+  "schedules": 52300,
+  "failing": 13629
+ },
+ "machines_exhaustive": [
+  {
+   "scenario": "create",
+   "plane": "unfenced",
+   "schedules": 281,
    "failing": 5,
    "kinds": {
-    "orphan": 5
+    "incomplete": 5,
+    "split-brain": 5
    },
-   "seconds": 17.8
+   "seconds": 0.1
   },
   {
-   "scenario": "two-machines",
-   "plane": "reconcile",
-   "runs": 20000,
+   "scenario": "create",
+   "plane": "fenced",
+   "schedules": 281,
    "failing": 0,
    "kinds": {},
-   "seconds": 15.2
+   "seconds": 0.1
   },
   {
-   "scenario": "three-clients",
-   "plane": "naive",
-   "runs": 20000,
-   "failing": 12278,
+   "scenario": "sleep-wake",
+   "plane": "unfenced",
+   "schedules": 8615,
+   "failing": 142,
    "kinds": {
-    "leak": 10024,
-    "two-vms": 6164,
-    "orphan": 3791
+    "incomplete": 30,
+    "split-brain": 142
    },
-   "seconds": 21.2
+   "seconds": 3.8
   },
   {
-   "scenario": "three-clients",
-   "plane": "journal",
-   "runs": 20000,
-   "failing": 1590,
-   "kinds": {
-    "orphan": 1081,
-    "two-vms": 660,
-    "leak": 527
-   },
-   "seconds": 19.0
-  },
-  {
-   "scenario": "three-clients",
-   "plane": "reconcile",
-   "runs": 20000,
+   "scenario": "sleep-wake",
+   "plane": "fenced",
+   "schedules": 8599,
    "failing": 0,
    "kinds": {},
-   "seconds": 14.4
+   "seconds": 3.8
   },
   {
-   "scenario": "create-delete",
-   "plane": "naive",
-   "runs": 20000,
-   "failing": 5749,
+   "scenario": "reboot",
+   "plane": "unfenced",
+   "schedules": 3265,
+   "failing": 103,
    "kinds": {
-    "orphan": 5749,
-    "two-vms": 2414
+    "incomplete": 55,
+    "split-brain": 103
    },
-   "seconds": 5.0
+   "seconds": 1.1
   },
   {
-   "scenario": "create-delete",
-   "plane": "journal",
-   "runs": 20000,
-   "failing": 17,
-   "kinds": {
-    "orphan": 17
-   },
-   "seconds": 5.6
-  },
-  {
-   "scenario": "create-delete",
-   "plane": "reconcile",
-   "runs": 20000,
+   "scenario": "reboot",
+   "plane": "fenced",
+   "schedules": 3257,
    "failing": 0,
    "kinds": {},
-   "seconds": 3.2
+   "seconds": 1.0
+  },
+  {
+   "scenario": "delete",
+   "plane": "unfenced",
+   "schedules": 1884,
+   "failing": 38,
+   "kinds": {
+    "split-brain": 38
+   },
+   "seconds": 0.5
+  },
+  {
+   "scenario": "delete",
+   "plane": "fenced",
+   "schedules": 1876,
+   "failing": 0,
+   "kinds": {},
+   "seconds": 0.5
+  },
+  {
+   "scenario": "reboot-retry",
+   "plane": "unfenced",
+   "schedules": 102995,
+   "failing": 1050,
+   "kinds": {
+    "incomplete": 730,
+    "split-brain": 1050
+   },
+   "seconds": 30.4
+  },
+  {
+   "scenario": "reboot-retry",
+   "plane": "fenced",
+   "schedules": 102827,
+   "failing": 0,
+   "kinds": {},
+   "seconds": 33.0
+  },
+  {
+   "scenario": "sleep-race",
+   "plane": "unfenced",
+   "schedules": 63817,
+   "failing": 449,
+   "kinds": {
+    "split-brain": 449,
+    "incomplete": 30
+   },
+   "seconds": 28.7
+  },
+  {
+   "scenario": "sleep-race",
+   "plane": "fenced",
+   "schedules": 63727,
+   "failing": 0,
+   "kinds": {},
+   "seconds": 34.1
   }
  ],
- "mutants": [
+ "machines_totals": {
+  "unfenced": {
+   "schedules": 180857,
+   "failing": 1787
+  },
+  "fenced": {
+   "schedules": 180567,
+   "failing": 0
+  }
+ },
+ "machines_two_faults_create": {
+  "schedules": 41157,
+  "failing": 0,
+  "kinds": {},
+  "seconds": 17.4
+ },
+ "buggy": [
   {
-   "mutant": "BlindRemove",
-   "caught_by": "recreate",
-   "schedules_to_first": 70
+   "plane": "Unfenced",
+   "origin": "first design",
+   "caught_in": "create",
+   "schedules_before": 5,
+   "fault": "node",
+   "kinds": [
+    "incomplete",
+    "split-brain"
+   ],
+   "held_out_runs": 12000,
+   "held_out_failing": 558,
+   "held_out_kinds": {
+    "incomplete": 496,
+    "split-brain": 558
+   }
   },
   {
-   "mutant": "KeepsOldIncarnation",
-   "caught_by": "recreate",
-   "schedules_to_first": 617
+   "plane": "StaleKeyRead",
+   "origin": "found in my fix",
+   "caught_in": "reboot",
+   "schedules_before": 228,
+   "fault": "crash",
+   "kinds": [
+    "double-reboot"
+   ],
+   "held_out_runs": 12000,
+   "held_out_failing": 83,
+   "held_out_kinds": {
+    "double-reboot": 83
+   }
   },
   {
-   "mutant": "TwoWorkers",
-   "caught_by": "create-delete",
-   "schedules_to_first": 908
+   "plane": "WakeReusesEpoch",
+   "origin": "found in my fix",
+   "caught_in": "sleep-wake",
+   "schedules_before": 2424,
+   "fault": "failover",
+   "kinds": [
+    "data-loss",
+    "incomplete"
+   ],
+   "held_out_runs": 12000,
+   "held_out_failing": 20,
+   "held_out_kinds": {
+    "incomplete": 20
+   }
+  },
+  {
+   "plane": "UnkeyedRequests",
+   "origin": "found in my fix",
+   "caught_in": "sleep-wake",
+   "schedules_before": 1172,
+   "fault": "failover",
+   "kinds": [
+    "lost"
+   ],
+   "held_out_runs": 12000,
+   "held_out_failing": 3,
+   "held_out_kinds": {
+    "lost": 3
+   }
+  },
+  {
+   "plane": "Impatient",
+   "origin": "seeded",
+   "caught_in": "delete",
+   "schedules_before": 429,
+   "fault": "lost",
+   "kinds": [
+    "data-loss"
+   ],
+   "held_out_runs": 12000,
+   "held_out_failing": 55,
+   "held_out_kinds": {
+    "data-loss": 55
+   }
+  },
+  {
+   "plane": "HardKill",
+   "origin": "seeded",
+   "caught_in": "create",
+   "schedules_before": 10,
+   "fault": "node",
+   "kinds": [
+    "data-loss"
+   ],
+   "held_out_runs": 12000,
+   "held_out_failing": 3628,
+   "held_out_kinds": {
+    "data-loss": 3628
+   }
+  },
+  {
+   "plane": "NoResync",
+   "origin": "seeded",
+   "caught_in": "create",
+   "schedules_before": 5,
+   "fault": "node",
+   "kinds": [
+    "leak"
+   ],
+   "held_out_runs": 12000,
+   "held_out_failing": 865,
+   "held_out_kinds": {
+    "leak": 863,
+    "incomplete": 2
+   }
+  },
+  {
+   "plane": "NoSeal",
+   "origin": "seeded",
+   "caught_in": "delete",
+   "schedules_before": 351,
+   "fault": "node",
+   "kinds": [
+    "writer-while-stopped"
+   ],
+   "held_out_runs": 12000,
+   "held_out_failing": 539,
+   "held_out_kinds": {
+    "writer-while-stopped": 539
+   }
+  },
+  {
+   "plane": "BlindPhase",
+   "origin": "seeded",
+   "caught_in": "sleep-wake",
+   "schedules_before": 343,
+   "fault": "failover",
+   "kinds": [
+    "writer-while-stopped"
+   ],
+   "held_out_runs": 12000,
+   "held_out_failing": 41,
+   "held_out_kinds": {
+    "writer-while-stopped": 41
+   }
   }
  ],
- "shrink": [
+ "held_out": {
+  "seed": 2027,
+  "scenarios": 40,
+  "runs": 300,
+  "machines": 3,
+  "length": 5,
+  "p": 0.2,
+  "bounds": "2 crashes, 2 lost replies, 2 failovers, 2 node partitions, any interleaving",
+  "schedules": 12000,
+  "failing": 0,
+  "kinds": {},
+  "seconds": 11.1
+ },
+ "known_gap": [
   {
-   "scenario": "two-machines",
-   "plane": "naive",
-   "before": 2,
-   "after": 1,
-   "steps": 19
+   "scenario": "create",
+   "schedules": 31,
+   "failing": 1,
+   "kinds": {
+    "unrequested-restart": 1
+   }
   },
   {
-   "scenario": "two-machines",
-   "plane": "journal",
-   "before": 4,
-   "after": 4,
-   "steps": 24
+   "scenario": "delete",
+   "schedules": 697,
+   "failing": 4,
+   "kinds": {
+    "unrequested-restart": 4
+   }
   },
   {
-   "scenario": "three-clients",
-   "plane": "naive",
-   "before": 3,
-   "after": 1,
-   "steps": 34
+   "scenario": "reboot",
+   "schedules": 1259,
+   "failing": 31,
+   "kinds": {
+    "unrequested-restart": 31
+   }
   },
   {
-   "scenario": "three-clients",
-   "plane": "journal",
-   "before": 1,
-   "after": 1,
-   "steps": 41
+   "scenario": "sleep-wake",
+   "schedules": 3501,
+   "failing": 62,
+   "kinds": {
+    "unrequested-restart": 62
+   }
   }
  ],
- "exhaustive_total": {
-  "schedules": 40918,
-  "seconds": 28.4
- }
+ "known_gap_total": {
+  "schedules": 5488,
+  "failing": 98
+ },
+ "seconds": 335.2
 }

@@ -1,5 +1,6 @@
-"""crashpoint: enumerate crashes, lost replies and interleavings against a
-small machine-lifecycle control plane, and check what is left behind.
+"""crashpoint: enumerate crashes, lost replies, interleavings, control-plane
+failovers and node partitions against a small machine-lifecycle control
+plane, and check what is left behind.
 
 Control-plane code is written as generators. Every store or node call is a
 `yield`, so the scheduler decides what runs next and can kill the process or
@@ -14,6 +15,11 @@ STEP_CAP = 400
 
 class LostReply(Exception):
     """The node applied the call but the caller never saw the answer."""
+
+
+class WorldFault(Exception):
+    """Raised by a world method when the call could not be delivered at all
+    (for example the target node is partitioned). Nothing was applied."""
 
 
 class World:
@@ -130,8 +136,48 @@ def call(effect):
 
 
 class Bounds:
-    def __init__(self, crashes=1, lost=1, preempts=1):
+    """Fault budget for one schedule.
+
+    crashes:    the control plane dies, in-flight work is dropped, it restarts
+    lost:       a node or storage call is applied but its reply is dropped
+    preempts:   switches away from a task that could have kept running
+    failovers:  a new control-plane instance takes over while the old one's
+                in-flight tasks keep running as zombies (a paused or
+                partitioned old leader)
+    node_faults: environment faults offered by the model (a node partition)
+    total:      optional cap on all of the above added together
+    """
+
+    def __init__(self, crashes=1, lost=1, preempts=1, failovers=0, node_faults=0, total=None):
         self.crashes, self.lost, self.preempts = crashes, lost, preempts
+        self.failovers, self.node_faults = failovers, node_faults
+        self.total = total      # cap on faults and preemptions together, any mix
+
+
+class ToyModel:
+    """World and invariants of the first version: one node, three resource
+    kinds per machine. Other models (machines.py) replace these five hooks."""
+
+    def new_world(self):
+        return World()
+
+    def env_options(self, world, budget):
+        """[(label, function(world), costs_a_node_fault)] offered at this step."""
+        return []
+
+    def step_check(self, world, violations):
+        for mid in world.machines():
+            n = sum(1 for v in world.vms.values() if v["mid"] == mid)
+            if n > 1 and ("two-vms", mid) not in violations:
+                violations.append(("two-vms", mid))
+
+    def settle(self, world):
+        """Called when nothing is running. Return True if the environment
+        changed something and the control plane should get another turn."""
+        return False
+
+    def final_check(self, world, plane, scenario, res):
+        return check(world, plane, scenario)
 
 
 class Result:
@@ -139,6 +185,8 @@ class Result:
         self.choices = []      # (index chosen, number of options)
         self.events = []       # readable trace
         self.violations = []   # (kind, detail)
+        self.acks = []         # (session index, request, reply) in order
+        self.used = {"crash": 0, "lost": 0, "preempt": 0, "failover": 0, "node": 0}
         self.steps = 0
 
     @property
@@ -146,28 +194,40 @@ class Result:
         return sorted(set(k for k, _ in self.violations))
 
 
-def run(plane_cls, scenario, prefix=(), bounds=None, rng=None, p=0.15):
+def run(plane_cls, scenario, prefix=(), bounds=None, rng=None, p=0.15, model=None):
     """Execute one schedule.
 
-    scenario: list of sessions, each a list of ('create', mid, key) or
-    ('delete', mid). A session sends its next request only after the previous
-    one was acknowledged, and resends the same request after a crash or error.
+    scenario: list of sessions, each a list of requests (name, args...). A
+    request is dispatched to the plane method of the same name. A session
+    sends its next request only after the previous one was acknowledged, and
+    resends the same request after a crash, a failover or an error.
     prefix: choice indices to replay. After the prefix, the default (index 0:
     keep running the same task, no fault) is taken. With rng, each choice is
     instead random with probability p.
+    model: world factory, environment faults and invariants (ToyModel if None).
     """
     bounds = bounds or Bounds()
-    world, plane, res = World(), plane_cls(), Result()
+    model = model or ToyModel()
+    world, plane, res = model.new_world(), plane_cls(), Result()
     tasks = {}                       # id -> [gen, pending effect, label, session, key]
     pos = [0] * len(scenario)
-    budget = {"crash": bounds.crashes, "lost": bounds.lost, "preempt": bounds.preempts}
+    budget = {"crash": bounds.crashes, "lost": bounds.lost, "preempt": bounds.preempts,
+              "failover": bounds.failovers, "node": bounds.node_faults}
     counter = [0]
     last = [None]
+
+    def spend(what):
+        budget[what] -= 1
+        res.used[what] += 1
+        if bounds.total is not None and sum(res.used.values()) >= bounds.total:
+            for k in budget:
+                budget[k] = 0
 
     def finish(tid, value):
         _, _, label, sess, _ = tasks.pop(tid)
         if sess is not None:
             if value in ("ok", "conflict"):
+                res.acks.append((sess, scenario[sess][pos[sess]], value))
                 pos[sess] += 1
             res.events.append("%s -> %s" % (label, value))
 
@@ -186,10 +246,7 @@ def run(plane_cls, scenario, prefix=(), bounds=None, rng=None, p=0.15):
             if pos[i] < len(reqs) and i not in active:
                 req = reqs[pos[i]]
                 label = "%s:%s" % ("ABCDEFGH"[i], " ".join(req))
-                if req[0] == "create":
-                    start(plane.create(req[1], req[2]), label, sess=i)
-                else:
-                    start(plane.delete(req[1]), label, sess=i)
+                start(getattr(plane, req[0])(*req[1:]), label, sess=i)
         keys = set(t[4] for t in tasks.values())
         for mid in plane.wants(world):
             if mid not in keys:
@@ -197,23 +254,34 @@ def run(plane_cls, scenario, prefix=(), bounds=None, rng=None, p=0.15):
 
     def step(tid, lose):
         gen, (target, method, args), label = tasks[tid][0], tasks[tid][1], tasks[tid][2]
-        value = getattr(world, method)(*args)
-        shown = ", ".join("-" if a is None else str(a) for a in args if not isinstance(a, dict))
-        res.events.append("%s: %s(%s)%s" % (label, method, shown, "  [reply lost]" if lose else ""))
-        for mid in world.machines():
-            n = sum(1 for v in world.vms.values() if v["mid"] == mid)
-            if n > 1 and ("two-vms", mid) not in res.violations:
-                res.violations.append(("two-vms", mid))
+        fault = None
         try:
-            tasks[tid][1] = gen.throw(LostReply()) if lose else gen.send(value)
+            value = getattr(world, method)(*args)
+        except WorldFault as exc:
+            fault, lose = exc, False
+        shown = ", ".join("-" if a is None else str(a) for a in args if not isinstance(a, (dict, tuple)))
+        note = "  [%s]" % fault if fault else ("  [reply lost]" if lose else "")
+        res.events.append("%s: %s(%s)%s" % (label, method, shown, note))
+        model.step_check(world, res.violations)
+        try:
+            if fault is not None:
+                tasks[tid][1] = gen.throw(fault)
+            elif lose:
+                tasks[tid][1] = gen.throw(LostReply())
+            else:
+                tasks[tid][1] = gen.send(value)
         except StopIteration as stop:
             finish(tid, stop.value)
-        except LostReply:
+        except (LostReply, WorldFault):
             finish(tid, "error")
+        return lose
 
     while True:
         spawn()
         if not tasks:
+            if model.settle(world):
+                res.events.append("--- environment settles: every node reachable again ---")
+                continue
             break
         if res.steps >= STEP_CAP:
             res.violations.append(("no-convergence", "step cap"))
@@ -226,10 +294,15 @@ def run(plane_cls, scenario, prefix=(), bounds=None, rng=None, p=0.15):
         if cont is None or budget["preempt"] > 0:
             options += [("step", t, False) for t in ids if t != cont]
         if budget["lost"] > 0:
-            options += [("step", t, True) for t in ids if tasks[t][1][0] == "node"
+            options += [("step", t, True) for t in ids if tasks[t][1][0] != "store"
                         and (t == cont or cont is None or budget["preempt"] > 0)]
         if budget["crash"] > 0 and res.steps > 0:
             options.append(("crash", None, False))
+        if budget["failover"] > 0 and res.steps > 0:
+            options.append(("failover", None, False))
+        for label, fn, costs in model.env_options(world, budget):
+            if not costs or budget["node"] > 0:
+                options.append(("env", (label, fn, costs), False))
         i = len(res.choices)
         if i < len(prefix):
             c = prefix[i]
@@ -241,21 +314,41 @@ def run(plane_cls, scenario, prefix=(), bounds=None, rng=None, p=0.15):
         kind, tid, lose = options[c]
         res.steps += 1
         if kind == "crash":
-            budget["crash"] -= 1
+            spend("crash")
             tasks.clear()
             last[0] = None
             res.events.append("*** control plane crashes and restarts ***")
             for label, gen in plane.recover(world):
                 start(gen, label)
             continue
+        if kind == "failover":
+            # The old instance is not dead. Its tasks keep running, but nobody
+            # waits for their replies and the new instance does not know them.
+            spend("failover")
+            for t in tasks.values():
+                if not t[2].startswith("zombie "):
+                    t[2] = "zombie " + t[2]
+                t[3] = t[4] = None
+            last[0] = None
+            res.events.append("*** a new control-plane instance takes over, old tasks keep running ***")
+            for label, gen in plane.recover(world):
+                start(gen, label)
+            continue
+        if kind == "env":
+            label, fn, costs = tid
+            if costs:
+                spend("node")
+            fn(world)
+            res.events.append("*** %s ***" % label)
+            model.step_check(world, res.violations)
+            continue
         if cont is not None and tid != cont:
-            budget["preempt"] -= 1
-        if lose:
-            budget["lost"] -= 1
+            spend("preempt")
         last[0] = tid
-        step(tid, lose)
+        if step(tid, lose):
+            spend("lost")
 
-    res.violations += check(world, plane, scenario)
+    res.violations += model.final_check(world, plane, scenario, res)
     return res
 
 
@@ -294,12 +387,12 @@ def check(world, plane, scenario):
     return out
 
 
-def explore(plane_cls, scenario, bounds=None, stop_at_first=False):
+def explore(plane_cls, scenario, bounds=None, stop_at_first=False, model=None):
     """Depth-first over every schedule inside the bounds. Returns
     (schedules run, failing schedules, {kind: count}, first failing prefix)."""
     prefix, n, bad, kinds, first = [], 0, 0, {}, None
     while True:
-        res = run(plane_cls, scenario, prefix, bounds)
+        res = run(plane_cls, scenario, prefix, bounds, model=model)
         n += 1
         if res.violations:
             bad += 1
@@ -318,13 +411,13 @@ def explore(plane_cls, scenario, bounds=None, stop_at_first=False):
     return n, bad, kinds, first
 
 
-def fuzz(plane_cls, scenario, runs, seed=0, bounds=None, p=0.15):
+def fuzz(plane_cls, scenario, runs, seed=0, bounds=None, p=0.15, model=None):
     """Random schedules with a larger fault budget than explore can afford."""
     bounds = bounds or Bounds(crashes=3, lost=3, preempts=10 ** 6)
     rng = random.Random(seed)
     bad, kinds, first = 0, {}, None
     for _ in range(runs):
-        res = run(plane_cls, scenario, (), bounds, rng, p)
+        res = run(plane_cls, scenario, (), bounds, rng, p, model)
         if res.violations:
             bad += 1
             for k in res.kinds:
@@ -334,13 +427,13 @@ def fuzz(plane_cls, scenario, runs, seed=0, bounds=None, p=0.15):
     return runs, bad, kinds, first
 
 
-def shrink(plane_cls, scenario, choices, bounds=None):
+def shrink(plane_cls, scenario, choices, bounds=None, model=None):
     """Reset non-default choices to the default while the run still fails."""
     choices = list(choices)
 
     def fails(cs):
         try:
-            return bool(run(plane_cls, scenario, cs, bounds).violations)
+            return bool(run(plane_cls, scenario, cs, bounds, model=model).violations)
         except IndexError:        # the edit changed how many options exist
             return False
 
@@ -363,17 +456,31 @@ def shrink(plane_cls, scenario, choices, bounds=None):
 
 
 def main(argv):
-    from planes import PLANES, SCENARIOS
-    from crashpoint import explore, shrink, run   # one copy of LostReply when run as a script
-    if len(argv) != 3 or argv[1] not in PLANES or argv[2] not in SCENARIOS:
-        print("usage: python crashpoint.py <%s> <%s>" % ("|".join(PLANES), "|".join(SCENARIOS)))
+    # Import by module name so there is one copy of LostReply when run as a script.
+    from crashpoint import Bounds, explore, shrink, run
+    import planes
+    import machines
+    import machine_planes
+    v1 = len(argv) == 3 and argv[1] in planes.PLANES and argv[2] in planes.SCENARIOS
+    v2 = len(argv) == 3 and argv[1] in machine_planes.PLANES and argv[2] in machines.SCENARIOS
+    if not (v1 or v2):
+        print("usage: python crashpoint.py <plane> <scenario>")
+        print("  one-node model:  planes %s, scenarios %s" % ("|".join(planes.PLANES), "|".join(planes.SCENARIOS)))
+        print("  machine model:   planes %s, scenarios %s" % ("|".join(machine_planes.PLANES), "|".join(machines.SCENARIOS)))
         return 2
-    plane, scenario = PLANES[argv[1]], SCENARIOS[argv[2]]
-    n, bad, kinds, first = explore(plane, scenario)
+    if v1:
+        plane, scenario = planes.PLANES[argv[1]], planes.SCENARIOS[argv[2]]
+        bounds, model = Bounds(), None
+        print("bounds: at most 1 crash, 1 lost reply and 1 preemption")
+    else:
+        plane, scenario = machine_planes.PLANES[argv[1]], machines.SCENARIOS[argv[2]]
+        bounds, model = Bounds(1, 1, 1, 1, 1, total=1), machines.MachineModel()
+        print("bounds: any single crash, lost reply, preemption, failover or node partition")
+    n, bad, kinds, first = explore(plane, scenario, bounds, model=model)
     print("%d schedules, %d failing %s" % (n, bad, kinds or ""))
     if first is not None:
-        small = shrink(plane, scenario, first)
-        res = run(plane, scenario, small)
+        small = shrink(plane, scenario, first, bounds, model=model)
+        res = run(plane, scenario, small, bounds, model=model)
         print("\na failing schedule after shrinking (%d steps):" % res.steps)
         for e in res.events:
             print("  " + e)

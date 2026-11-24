@@ -1,125 +1,229 @@
 # crashpoint
 
-Enumerate crashes, lost replies and interleavings against a small control plane, and check what is left behind.
+A small model checker for machine-lifecycle control planes. It runs control-plane code under a scheduler that enumerates crashes, lost replies, interleavings, control-plane failovers and node partitions, and checks what is left behind.
 
-The problem that inspired this is control-plane correctness for machine lifecycles: a create or delete is several steps (volume, IP, VM, record), and the interesting bugs only show up when the process dies halfway, a reply is lost, or two requests overlap. Those are hard to hit with ordinary tests. `crashpoint` runs the control-plane code under a scheduler that decides, at every store or node call, which task runs next, whether the reply is dropped, and whether the whole process crashes and restarts. After every request is acknowledged and nothing is left running, it checks the invariants.
+This is an independent prototype. It is not affiliated with, endorsed by, or reviewed by Dedalus Labs. Everything it runs against is a simulated cluster and synthetic scenarios. It has never touched a real VM, Kubernetes, or the Dedalus API.
 
-It is two files of Python with no dependencies: `crashpoint.py` (the simulator, 386 lines) and `planes.py` (three control planes for the same create/delete API, 178 lines).
+## The problem
+
+Creating, sleeping, waking, rebooting and deleting a machine each take several steps across a record store, a node and storage. The bugs show up only when something happens between two of those steps: the process dies, a reply is lost, two requests overlap, an old worker keeps running after a new one took over, or a node stops answering while its VM is still alive. Ordinary tests almost never hit those points. I wanted a tool that hits all of them inside a stated bound, and then tells me which guarantee broke.
+
+## Why this matters to Dedalus Labs
+
+What I verified from public pages:
+
+- Dedalus Machines are persistent, isolated computers for AI agents that keep files and state over time. (https://www.ycombinator.com/companies/dedalus-labs)
+- The Systems Engineer Intern posting lists control-plane correctness (retries, cancellation, concurrent requests, cleanup) and failure testing (inject a crash, a delayed response or an interrupted operation, and explain which guarantees the test establishes). It also says model checking experience is a plus. (https://www.ycombinator.com/companies/dedalus-labs/jobs/EQcMolJ-systems-engineer-intern-co-op)
+- The public Go SDK defines the machine endpoints (create, sleep, wake, reboot, delete under `v1/machines`), a `desired_state` of `running`, `sleeping` or `destroyed`, a `phase` with nine values from `accepted` to `failed`, and a lifecycle status with a `revision`. (https://github.com/dedalus-labs/dedalus-go/blob/main/machine.go)
+- The lifecycle docs say a reboot is rejected with 409 unless `desired_state` is `running`, that repeating a completed reboot with the same `Idempotency-Key` returns the saved response without restarting again, and that files survive sleep and wake while processes do not. (https://docs.dedaluslabs.ai/dcs/dm/lifecycle)
+- The SDK README says a machine must reach `running` before processes can be started on it. (https://github.com/dedalus-labs/dedalus-go)
+
+So the second model in this repo uses that public contract as its specification: the same requests, the same two enums, the 409 rule for reboot, and the idempotency rule. Everything underneath the API in my model (two nodes, a storage service that decides who may write a volume, a compare-and-swap record store) is my own assumption. I do not know how Dedalus implements any of it.
+
+## What it does
+
+There are two models.
+
+**One-node model (the first version of this project).** Three control planes for create and delete. `naive` leaks on almost any crash. `journal` resumes unfinished work after a restart and still fails. `reconcile` passed every schedule I enumerated, and I called it correct.
+
+**Machine model (new).** Requests are create, sleep, wake, reboot and delete, each with an idempotency key. The world has two nodes and a storage service. Two faults were added that the first version did not have:
+
+- failover: a new control-plane instance takes over while the old instance's in-flight tasks keep running. The first version only had crashes, where in-flight work disappears.
+- node partition: calls to the node fail, and the VM on it keeps running.
+
+Invariants in the machine model:
+
+| name | meaning |
+|---|---|
+| `split-brain` | two VMs can write the same machine's volume at the same time (checked after every step) |
+| `writer-while-stopped` | the record says `sleeping` or `destroyed` while some VM can still write (every step) |
+| `data-loss` | a VM that was reported `running` lost write access without a checkpoint, on a node that was never cut off |
+| `double-reboot` | one idempotency key restarted a machine more than once |
+| `lost` | the final `desired_state` is not what the acknowledged replies promised |
+| `leak`, `incomplete` | at the end, VMs exist that the record does not name, or the named one is missing or cannot write |
+| `unrequested-restart` | the machine was started more often than create, wake and reboot explain |
+| `bad-enum` | a record was written with a `desired_state` or `phase` outside the public enums |
 
 ## Results
 
-`python bench.py` enumerates every schedule with at most 1 crash, 1 lost reply and 1 preemption for five scenarios and three control planes. That is 40,918 schedules.
+All numbers below are from `python bench.py` on Python 3.13 in one run that took 335 seconds. They are in `bench_results.json`.
 
-| scenario | naive | journal | reconcile |
+### The plane I called correct fails under the new fault
+
+The one-node `reconcile` plane passed 16,086 of 16,086 schedules in the first version (1 crash, 1 lost reply, 1 preemption). With one failover and one preemption instead, it fails 13,629 of 52,300. An old reconcile pass keeps creating resources for a machine that the new instance has already deleted. Nothing in that design stops a late call from an old pass.
+
+### First attempt at failover, and three bugs in my fix
+
+In the machine model my first design (`unfenced`) restarts the machine on the other node when its node stops answering. With any single fault it fails 1,787 of 180,857 schedules, all of them `split-brain`: the old VM is still alive behind the partition and both can write.
+
+The fix gives every runtime start an epoch. Storage lets only the newest epoch write, and a graceful stop closes its epoch. I expected that to pass. The checker found three more bugs first:
+
+| bug | fault needed | violation | first failing schedule |
 |---|---|---|---|
-| create | 33 of 35 fail | 0 of 353 | 0 of 54 |
-| create, then delete | 57 of 100 | 318 of 1,607 | 0 of 1,548 |
-| create, delete, create again | 144 of 195 | 1,808 of 4,303 | 0 of 11,135 |
-| two clients send the same create | 3,090 of 3,104 | 0 of 7,712 | 0 of 1,678 |
-| create and delete race | 414 of 470 | 1,432 of 6,953 | 0 of 1,671 |
-| total | 3,738 of 3,904 | 3,558 of 20,928 | 0 of 16,086 |
+| reboot looked up the idempotency key in one read and recorded the reboot in a later write | crash | `double-reboot` | 228th of scenario `reboot` |
+| wake kept the epoch the machine went to sleep in | failover (also node partition) | `data-loss`, `incomplete` | 2,424th of `sleep-wake` |
+| sleep, wake and delete did not record their request key | failover | `lost` | 1,172nd of `sleep-wake` |
 
-The three planes:
+I kept each one as a class in `machine_planes.py` so the tests replay them.
 
-- `naive` does the steps in order and writes the record at the end. It leaks on almost any crash.
-- `journal` was my first fix: write the intent first, name every resource after the idempotency key so each step can be repeated, and resume unfinished operations after a restart. This is the one I expected to pass.
-- `reconcile` is what I ended up with: handlers only write the desired state with compare-and-swap, and one reconcile task per machine observes the node and moves it toward the record.
+### The hardest one
 
-### The bug in the journal version
-
-I expected `journal` to fail only when a create and a delete from different clients overlap. It also fails with a single client that does nothing concurrent. This is the trace `python crashpoint.py journal create-delete` prints, with two stretches shortened:
+Wake reusing the epoch. This is the trace for a node partition, shortened and with my notes on the right (`machines` scenario `sleep-wake`, 64 of 5,438 schedules fail with one node fault):
 
 ```
-A:create m1 k1: get(m1)
-A:create m1 k1: insert(m1)
-A:create m1 k1: create_volume(m1.k1.vol, m1, k1)
-A:create m1 k1: alloc_ip(m1.k1, m1, k1)
-A:create m1 k1: boot_vm(m1.k1, m1, k1, m1.k1.vol, m1.k1)
-*** control plane crashes and restarts ***
-resume create m1: create_volume(m1.k1.vol, m1, k1)
-A:create m1 k1: get(m1)
-  ... the client retries, the create finishes and is acknowledged ...
-A:delete m1: get(m1)
-  ... the delete finishes and is acknowledged ...
-resume create m1: alloc_ip(m1.k1, m1, k1)
-resume create m1: boot_vm(m1.k1, m1, k1, m1.k1.vol, m1.k1)
-VIOLATION orphan: m1 has no record but 1 resources remain
+reconcile m1: boot_vm(n1, m1, 2)
+reconcile m1: cas(m1, 2)                       <- reported running on n1, epoch 2
+A:sleep m1 s1 -> ok
+reconcile m1: observe(n1, m1)
+*** node n1 is partitioned from the control plane ***
+reconcile m1: stop_vm(n1, m1, 2)  [unreachable]
+reconcile m1: observe(n1, m1)  [unreachable]
+reconcile m1: seal(m1, 2)                      <- cannot stop it, so fence epoch 2
+reconcile m1: cas(m1, 4)                       <- reported sleeping
+A:wake m1 w1 -> ok
+*** node n1 is reachable again ***
+reconcile m1: observe(n1, m1)                  <- sees a VM with the epoch the record names
+reconcile m1: boot_vm(n1, m1, 2)               <- "already running", returns true
+reconcile m1: cas(m1, 6)                       <- reported running
+VIOLATION incomplete: m1 wants running at ('n1', 2), phase running, VMs [('n1', 2)]
 ```
 
-After the restart there are two things driving the same create: the resume task and the client's retry. Both are safe on their own because the steps are idempotent. But the resume task is slow, the client finishes and then deletes the machine, and the resume task allocates an IP for a machine that no longer exists. In the "create again" scenario the same race removes the record of the new incarnation, so an acknowledged create is lost.
+The machine is reported `running`, but its VM is the one that was fenced while it slept, so it cannot write its disk. My first guess was that the node model was wrong and `boot_vm` should not answer "already running" for a fenced VM. That would have hidden the problem. The record was naming an epoch that storage had already closed, and the same mistake let an old pass fence a healthy VM after a failover. The fix is in the wake handler: wake always moves to a new epoch, in the same compare-and-swap that changes `desired_state`. After that, 0 of 4,816 schedules fail under the same bound.
 
-That is why the third version has no resume logic at all. A reconcile pass does not remember what it was doing. It reads the record, looks at the node, and acts on the difference, and there is never more than one pass per machine.
+### Final version
 
-### Random schedules
-
-Enumeration gets expensive quickly, so larger scenarios use random schedules with up to 3 crashes and 3 lost replies. 20,000 schedules each, seed 1:
-
-| scenario | naive | journal | reconcile |
-|---|---|---|---|
-| two machines, two clients | 8,537 fail | 5 | 0 |
-| three clients, two machines, seven requests | 12,278 | 1,590 | 0 |
-| create, then delete (same as above) | 5,749 | 17 | 0 |
-
-The last row is the useful comparison. Enumeration found the journal bug in 318 of 1,607 schedules. Random scheduling hit it 17 times in 20,000, because it needs a crash at one point followed by one task being starved for a long time.
-
-### Does the checker catch anything in the version that passes?
-
-A clean result only means something if the checker can fail. I put three bugs into `reconcile` and each was caught by enumeration:
-
-| seeded bug | caught in scenario | schedules run before the first failure |
+| check | schedules | failing |
 |---|---|---|
-| remove the record without checking its version | create, delete, create again | 70 |
-| never clean up resources of an earlier incarnation | create, delete, create again | 617 |
-| a second reconcile task per machine after a restart | create, then delete | 908 |
+| 6 development scenarios, any single crash, lost reply, preemption, failover or node partition | 180,567 | 0 |
+| scenario `create`, any two of those | 41,157 | 0 |
+| held-out: 40 generated scenarios (seed 2027, up to 3 machines, up to 6 requests per client), random schedules with up to 2 crashes, 2 lost replies, 2 failovers, 2 node partitions | 12,000 | 0 |
 
-## How it works
+The development scenarios are the ones I fixed bugs against. The held-out scenarios come from a random generator with settings I did not use while developing, and the plane was not changed after running them.
 
-Control-plane code is written as Python generators. Every call to the record store or the node is a `yield`:
+### Can the checker fail?
+
+Nine planes with a known bug: my first design, the three bugs above, and five seeded bugs. Enumeration caught all nine. Random schedules on the held-out scenarios also caught all nine, but some of them rarely:
+
+| plane | first caught by enumeration in | held-out random, failing of 12,000 |
+|---|---|---|
+| Unfenced | `create`, schedule 5 | 558 |
+| StaleKeyRead | `reboot`, schedule 228 | 83 |
+| WakeReusesEpoch | `sleep-wake`, schedule 2,424 | 20 |
+| UnkeyedRequests | `sleep-wake`, schedule 1,172 | 3 |
+| Impatient (one lost reply treated as a dead node) | `delete`, schedule 429 | 55 |
+| HardKill (stop without checkpoint) | `create`, schedule 10 | 3,628 |
+| NoResync | `create`, schedule 5 | 865 |
+| NoSeal | `delete`, schedule 351 | 539 |
+| BlindPhase (phase written without compare-and-swap) | `sleep-wake`, schedule 343 | 41 |
+
+Three hits in 12,000 for the unkeyed-request bug is the reason I enumerate first and use random schedules only where enumeration is too large.
+
+### A gap I did not close
+
+With a failover, an old reconcile pass can still stop the current, healthy VM. The stop is graceful, so a checkpoint is published and no files are lost, but the machine restarts without anyone asking. With the `unrequested-restart` check kept on for failover runs, the final plane fails 98 of 5,488 schedules across four scenarios. The normal runs above switch that check off when a failover happened. Closing it needs the node to reject calls from an old control-plane instance, which this model does not have. `test_known_gap_stale_pass_can_restart_a_healthy_machine` pins this so I cannot forget it.
+
+## Architecture
+
+| file | what it holds |
+|---|---|
+| `crashpoint.py` | scheduler, depth-first enumeration, random schedules, shrinking, fault budgets, CLI |
+| `planes.py` | one-node model: `naive`, `journal`, `reconcile` |
+| `machines.py` | machine model: record store, nodes, storage fence, invariants, scenarios, scenario generator |
+| `machine_planes.py` | `Fenced`, `Unfenced`, the three found bugs, five seeded bugs |
+| `test_crashpoint.py`, `test_machines.py` | 65 tests |
+| `bench.py`, `bench_results.json` | every number in this README |
+| `demo.py` | a 10 second tour |
+
+Control-plane code is written as Python generators. Every call to the store, a node or storage is a `yield`, so the scheduler sees each one before it happens:
 
 ```python
-def delete(self, mid):
+def reboot(self, mid, key):
     while True:
+        saved = yield S("idem_get", key)
+        if saved:
+            return saved
         rec = yield S("get", mid)
-        if rec is None or rec["want"] == "absent":
-            return "ok"
-        if (yield S("cas", mid, rec["ver"], {"want": "absent", "status": "pending"})):
-            return "ok"
+        if rec is None or rec["desired_state"] != "running":
+            return (yield from self._reject(key))      # 409: not running
+        ...
 ```
 
-The scheduler holds the pending call of every task. At each step it lists the options: run one of the tasks, run a node call but throw away the reply, or crash. A crash drops every in-flight task and keeps the store and the node. Clients are outside the process, so they resend the same request with the same key after a crash or an error.
+At each step the scheduler lists its options: run one of the tasks, apply a call but drop the reply, crash, fail over, or let the model change the environment. A schedule is the list of option indices, so any run replays exactly. A model object supplies the world, the environment faults and the invariants, which is how the same scheduler serves both models.
 
-A schedule is the list of option indices chosen, so any run can be replayed exactly. `explore` walks all of them depth first by re-running from the start with a longer prefix each time. `fuzz` picks randomly. `shrink` resets choices to the default one at a time while the run still fails.
+## Key decisions and tradeoffs
 
-Invariants checked once everything is quiet:
+- **Generators instead of threads.** The code under test has to be written in this style, which is a real cost. In return every schedule is deterministic and replayable, and a failing one is a short list of integers.
+- **Re-execution instead of state hashing.** Enumeration re-runs from the start with a longer prefix each time. Generators cannot be copied or hashed, so I have no visited-state table and no partial-order reduction. Many enumerated schedules are equivalent.
+- **A cap on total faults.** Two faults of five kinds on a 25-step run is already millions of schedules. I enumerate any single fault on all scenarios, any two on the smallest one, and use random schedules above that. "0 failing" means none inside those bounds.
+- **Failover is a separate fault from a crash.** The first version passed because a crash removes in-flight work. Keeping old tasks alive is what broke it.
+- **The data-loss rule depends on what was reported.** A VM that is fenced before the record ever said `running` cannot hold user writes, because the SDK says a machine has to reach `running` before it can be used. Without that rule, a late start from an old pass would count as data loss.
+- **The reconcile trigger reads the simulated nodes directly.** `wants()` stands in for a periodic resync. I did not model how a real controller learns that a node disagrees with a record.
+- **Python, not Rust or Go.** The posting prefers Rust for runtime work. I chose Python to get a working checker and its test suite finished. The scheduler design does not depend on the language, but I have not ported it.
 
-- no resources exist for a machine that has no record (`orphan`)
-- a machine with a record has exactly one VM, one IP and one volume of the current incarnation and nothing else (`leak`, `incomplete`)
-- a machine used by one client ends in the state of that client's last acknowledged request (`lost`)
+## Install and usage
 
-And one checked after every step: a machine never has two VMs at once (`two-vms`).
-
-## What did not work
-
-- The journal design, as described above.
-- Running the script directly first gave me different schedule counts than importing it (2,063 instead of 1,607 for the same scenario). `crashpoint.py` was loaded twice, once as `__main__` and once as `crashpoint`, so there were two `LostReply` classes and the retry helper did not catch the one the scheduler threw. Every lost reply turned into a failed request. `main` now imports from the module by name.
-- Shrinking does little. On the first failing random schedule it took the naive plane from 2 non-default choices to 1 and from 3 to 1, and did not reduce either journal failure (4 stayed 4, 1 stayed 1). The traces are still 19 to 41 steps long because it only removes faults and preemptions, not requests.
-- I wrote a fourth seeded bug, a delete that overwrites the record without compare-and-swap. Nothing caught it. When I looked, it is not a bug in this model: the overwrite only sets `want` to absent, which is a legal outcome of a delete racing a create. I removed it instead of counting it.
-- The two-machine scenario was too big to enumerate in the benchmark. One run of it on the journal plane was 103,712 schedules and took 74 seconds, so it is only fuzzed.
-
-## Limits
-
-- This is a model. The node is a Python object with three dictionaries. It has not been run against Kubernetes, a real VMM, or any real control plane.
-- The bounds are small: 1 crash, 1 lost reply, 1 preemption. A bug that needs two crashes is only reachable through the random mode. "0 failing" means none inside those bounds on these five scenarios, not a proof.
-- Calls are atomic and the store is linearizable. There are no partial writes, no network partitions, no clock, and no stale task that survives a crash and keeps running, which is what fencing tokens are for.
-- No partial-order reduction, so many enumerated schedules are equivalent. The same 40,918 schedules took 5.8 seconds on an idle machine and 28.4 seconds when the machine was busy with other jobs.
-- The reconcile plane acknowledges a create when the desired state is written, not when the VM is up. The check only requires that it gets there.
-
-## Run it
+Python 3 standard library only. Nothing to install.
 
 ```
-python test_crashpoint.py
-python bench.py
+python demo.py                          # about 10 seconds
+python -m unittest                      # 65 tests, about 10 seconds
+python crashpoint.py unfenced create    # prints a failing schedule, exits 1
+python crashpoint.py fenced delete      # 1876 schedules, 0 failing, exits 0
 python crashpoint.py journal create-delete
+python bench.py                         # about 6 minutes, rewrites bench_results.json
 ```
 
-Tested on Python 3.13. Nothing to install. The CLI takes a plane (`naive`, `journal`, `reconcile`) and a scenario (`create`, `create-delete`, `recreate`, `retry-race`, `delete-race`), and exits 1 if any schedule fails.
+## A real example
+
+`python crashpoint.py unfenced create`, with the first eleven lines of the trace removed:
+
+```
+bounds: any single crash, lost reply, preemption, failover or node partition
+281 schedules, 5 failing {'incomplete': 5, 'split-brain': 5}
+
+a failing schedule after shrinking (29 steps):
+  ...
+  reconcile m1: boot_vm(n1, m1, 1)
+  *** node n1 is partitioned from the control plane ***
+  reconcile m1: cas(m1, 2)
+  reconcile m1: get(m1)
+  reconcile m1: observe(n1, m1)  [unreachable]
+  reconcile m1: observe(n2, m1)
+  reconcile m1: cas(m1, 3)
+  reconcile m1: get(m1)
+  reconcile m1: observe(n1, m1)  [unreachable]
+  reconcile m1: observe(n2, m1)
+  reconcile m1: vol_create(m1)
+  reconcile m1: boot_vm(n2, m1, 1)
+  reconcile m1: cas(m1, 4)
+  --- environment settles: every node reachable again ---
+  reconcile m1: get(m1)
+  reconcile m1: observe(n1, m1)
+  reconcile m1: observe(n2, m1)
+  reconcile m1: stop_vm(n1, m1, 1)
+  reconcile m1: vol_create(m1)
+  reconcile m1: boot_vm(n2, m1, 1)
+  VIOLATION split-brain: m1
+  VIOLATION incomplete: m1 wants running at ('n2', 1), phase running, VMs [('n2', 1)]
+```
+
+## Tests and verified results
+
+`python -m unittest` runs 65 tests: the 18 from the first version, unchanged, and 47 new ones. They also pass with `python -W error -m unittest`.
+
+The new tests cover the storage fence and node model (including calls to a partitioned node, a seal that arrives before the volume exists, and a stop with the wrong epoch), the documented API behaviour without faults (reboot on a sleeping machine is rejected, the same reboot key restarts once, nothing but delete works after delete), the scheduler (the fault cap, zombies after a failover and none after a crash, deterministic replay), and the findings above. One test checks that the schedule counts of the first version did not change when I rewrote the scheduler (1,607 schedules and 318 failures for `journal create-delete`, and `bench.py` reproduces the old total of 40,918).
+
+What is not verified: anything about real systems. I have not run this against Kubernetes, a VMM or the Dedalus API, and I have no evidence that the bugs it finds in my planes exist in anyone else's code.
+
+## Limitations and next steps
+
+- It is a model. Nodes are dictionaries. Calls are atomic, the record store is linearizable and never loses a reply, and there is no clock.
+- The plane can tell a lost reply from an unreachable node. A real controller cannot, and has to decide with timeouts. The `Impatient` seeded bug shows what goes wrong when one lost reply counts as a dead node, but I did not model a failure detector.
+- Machine ids are chosen by the client here. The real API generates them, so "the same create sent twice makes two machines" is a bug class this model cannot express.
+- Applying the idempotency key to sleep, wake and delete is my assumption. The docs I read state the rule for reboot.
+- The `failed` phase is never used, and resize, autosleep, forced reboot, forced delete, executions and SSH are not modelled.
+- The unrequested restart after a failover, described above, is open.
+- At most one node is partitioned at a time, and there are two nodes.
+- Shrinking only resets faults and preemptions. It does not remove requests, so traces are 20 to 30 steps.
+
+Next I would add a control-plane term that nodes check, to close the restart gap, then port the scheduler to Rust with an explicit state machine per task so states can be hashed and equivalent schedules skipped.
